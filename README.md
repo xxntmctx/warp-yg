@@ -2,11 +2,11 @@
 
 ### 一、WARP多功能一键脚本，支持纯IPV4、纯IPV6的VPS直接安装，主流linux系统均支持
 ```
-bash <(wget -qO- https://raw.githubusercontent.com/yonggekkk/warp-yg/main/CFwarp.sh)
+bash <(wget -qO- https://raw.githubusercontent.com/xxntmctx/warp-yg/main/CFwarp.sh)
 ```
 或者
 ```
-bash <(curl -Ls https://raw.githubusercontent.com/yonggekkk/warp-yg/main/CFwarp.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/xxntmctx/warp-yg/main/CFwarp.sh)
 ```
 
 #### 千万要注意：如出现IP丢失、VPS运行卡顿、脚本运行下载失败、无法进入脚本界面等现象，请用以下命令终止warp，再重启或者重装warp
@@ -46,7 +46,7 @@ Replit平台一键无限生成WARP-Wireguard配置（须登录fork后才可运�
 
 -----------------------------------------------------
 ### 感谢你右上角的star🌟
-[![Stargazers over time](https://starchart.cc/yonggekkk/warp-yg.svg)](https://starchart.cc/yonggekkk/warp-yg)
+[![Stargazers over time](https://starchart.cc/xxntmctx/warp-yg.svg)](https://starchart.cc/xxntmctx/warp-yg)
 
 --------------------------------------------------------------
 #### 感谢WGCF源项目代码地址：https://github.com/ViRb3/wgcf

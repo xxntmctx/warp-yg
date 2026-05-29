@@ -43,7 +43,7 @@ Usage: Unzip the downloaded (WIN-end-warp-optional-IP-v23.11.15.zip) file, Refer
 
 -----------------------------------------------------
 ### Thank You for Your Star in the Upper Right Corner 🌟
-[![Stargazers Over Time](https://starchart.cc/yonggekkk/warp-yg.svg)](https://starchart.cc/yonggekkk/warp-yg)
+[![Stargazers Over Time](https://starchart.cc/xxntmctx/warp-yg.svg)](https://starchart.cc/xxntmctx/warp-yg)
 
 --------------------------------------------------------------
 #### Thanks to WGCF Source Project Code Address: [WGCF Repository](https://github.com/ViRb3/wgcf)
