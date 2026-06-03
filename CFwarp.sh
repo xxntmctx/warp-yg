@@ -500,11 +500,23 @@ curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor --o
 echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
 sudo apt-get update && sudo apt-get install cloudflare-warp
 fi
+
+# Added: 屏蔽 warp-svc 日志写盘以优化磁盘 I/O Wait
+systemctl stop warp-svc >/dev/null 2>&1
+rm -rf /var/log/cloudflare-warp/*
+ln -sf /dev/null /var/log/cloudflare-warp/cfwarp_service_log.txt
+ln -sf /dev/null /var/log/cloudflare-warp/cfwarp_service_connection_stats.txt
+ln -sf /dev/null /var/log/cloudflare-warp/cfwarp_service_network_health_stats.txt
+ln -sf /dev/null /var/log/cloudflare-warp/cfwarp_route_change_log.txt
+ln -sf /dev/null /var/log/cloudflare-warp/cfwarp_service_taskdump.txt
+systemctl start warp-svc >/dev/null 2>&1
+
 warpip
 echo y | warp-cli registration new
 warp-cli mode proxy 
 warp-cli proxy port 40000
 warp-cli connect
+warp-cli dns log disable >/dev/null 2>&1
 #wppluskey >/dev/null 2>&1
 #ID=$(tail -n1 /root/WARP+Keys.txt | cut -d' ' -f1 2>/dev/null)
 #if [[ -n $ID ]]; then
