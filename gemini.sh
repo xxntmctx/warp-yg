@@ -14,7 +14,7 @@ WIREPROXY_CONF="${WIREPROXY_CONF:-/etc/wireguard/proxy.conf}"
 PREFER_IPV6="${PREFER_IPV6:-true}"
 DEBUG_MODE="${DEBUG_MODE:-false}"
 TIMEOUT=10
-MAX_RETRIES=5
+MAX_RETRIES=6
 
 STATE_DIR="/tmp/warp_monitor"
 STATS_FILE="${STATE_DIR}/stats.dat"
@@ -225,15 +225,40 @@ fetch_trace_for_stack() {
 }
 
 get_warp_network_info() {
+    ACTIVE_STACK=""
+    ACTIVE_STACK_LABEL="未知"
+
+    if [ "$WARP_MODE" = "wireproxy" ] || [ "$WARP_MODE" = "socks5" ]; then
+        fetch_trace_for_stack "auto"
+        if [[ "$CURRENT_WARP" =~ ^(on|plus)$ ]] && [ -n "$CURRENT_IP" ]; then
+            ACTIVE_STACK="auto"
+            if [[ "$CURRENT_IP" == *:* ]]; then
+                ACTIVE_STACK_LABEL="IPv6(Auto)"
+            else
+                ACTIVE_STACK_LABEL="IPv4(Auto)"
+                if [ "${PREFER_IPV6}" = "true" ]; then
+                    local auto_v4_ip="$CURRENT_IP"
+                    fetch_trace_for_stack "6"
+                    if [[ "$CURRENT_WARP" =~ ^(on|plus)$ ]] && [[ "$CURRENT_IP" == *:* ]]; then
+                        debug_log "Socks5h(auto) exited via IPv4 (${auto_v4_ip}) even though IPv6 (${CURRENT_IP}) works"
+                        fetch_trace_for_stack "auto"
+                        ACTIVE_STACK_LABEL="IPv4(Auto-非v6优先)"
+                    else
+                        fetch_trace_for_stack "auto"
+                    fi
+                fi
+            fi
+            debug_log "Auto stack ${ACTIVE_STACK_LABEL} ok: ip=${CURRENT_IP} colo=${CURRENT_COLO} loc=${CURRENT_LOC}"
+            return 0
+        fi
+    fi
+
     local primary_stack="6"
     local fallback_stack="4"
     if [ "${PREFER_IPV6}" != "true" ]; then
         primary_stack="4"
         fallback_stack="6"
     fi
-
-    ACTIVE_STACK=""
-    ACTIVE_STACK_LABEL="未知"
 
     fetch_trace_for_stack "$primary_stack"
     if [[ "$CURRENT_WARP" =~ ^(on|plus)$ ]] && [ -n "$CURRENT_IP" ]; then
@@ -250,15 +275,10 @@ get_warp_network_info() {
     if [[ "$CURRENT_WARP" =~ ^(on|plus)$ ]] && [ -n "$CURRENT_IP" ]; then
         ACTIVE_STACK="$fallback_stack"
         [ "$fallback_stack" = "6" ] && ACTIVE_STACK_LABEL="IPv6(回退)" || ACTIVE_STACK_LABEL="IPv4(回退)"
-        debug_log "Fallback stack ${ACTIVE_STACK_LABEL} ok: ip=${CURRENT_IP} colo=${CURRENT_COLO} loc=${CURRENT_LOC}"
+        debug_log "Fallback stack ${ACTIVE_STACK_LABEL} ok: ip=${CURRENT_IP} colo=${CURRENT_LOC}"
         return 0
     fi
 
-    fetch_trace_for_stack "auto"
-    ACTIVE_STACK="auto"
-    if [ -n "$CURRENT_IP" ]; then
-        [[ "$CURRENT_IP" == *:* ]] && ACTIVE_STACK_LABEL="IPv6(自动)" || ACTIVE_STACK_LABEL="IPv4(自动)"
-    fi
     [ -z "$CURRENT_IP" ] && CURRENT_IP="未知IP"
     [ -z "$CURRENT_LOC" ] && CURRENT_LOC="未知地区"
     [ -z "$CURRENT_COLO" ] && CURRENT_COLO="未知"
@@ -267,8 +287,18 @@ get_warp_network_info() {
 
 # ----------------- 3. 五维深度探测 Google / YouTube / Gemini -----------------
 check_youtube() {
-    local yt_res yt_url yt_code yt_gl yt_hl
+    local yt_bare yt_bare_loc yt_res yt_url yt_code yt_gl yt_hl
     build_curl_args "$ACTIVE_STACK" "www.youtube.com" "consent.youtube.com"
+
+    yt_bare=$(curl -sI "${CURL_ARGS[@]}" --connect-timeout 5 --max-time 6 "https://www.youtube.com/premium" 2>/dev/null)
+    yt_bare_loc=$(echo "$yt_bare" | grep -i '^location:' | head -n 1 | tr -d '\r\n')
+    debug_log "YouTube bare loc=${yt_bare_loc}"
+    if echo "$yt_bare_loc" | grep -qiE "consent\.youtube\.com.*([?&]hl=(ru|be|fa)|[?&]gl=(CN|HK|MO|RU|IR|KP|BY|SY|CU))"; then
+        YT_REGION="俄语/受限区(bare)"
+        DIAG_MSG="⚠️ YouTube 裸请求暴露俄语或受限区画像 (${yt_bare_loc})"
+        return 1
+    fi
+
     yt_res=$(curl -sL "${CURL_ARGS[@]}" --connect-timeout "${TIMEOUT}" --max-time "${TIMEOUT}" \
         -H "User-Agent: ${USER_AGENT}" \
         -H "Accept-Language: en-US,en;q=0.9" \
@@ -402,6 +432,44 @@ check_gemini() {
         return 1
     fi
 
+    GEMINI_TZ="未知"
+    local wiz_info wiz_tz wiz_cc
+    if command -v python3 >/dev/null 2>&1; then
+        wiz_info=$(python3 -c 'import sys, re, json
+html = sys.stdin.read()
+m = re.search(r"window\.WIZ_global_data\s*=\s*(\{.*?\});", html, re.S)
+if m:
+    d = json.loads(m.group(1))
+    tz = d.get("rtQCxc", "")
+    vx = str(d.get("vXmutd", ""))
+    cc_m = re.search(r"\"([A-Z]{2})\"", vx)
+    cc = cc_m.group(1) if cc_m else ""
+    print(f"{tz}|{cc}")' <<< "$resp_gemini" 2>/dev/null)
+        wiz_tz="${wiz_info%%|*}"
+        wiz_cc="${wiz_info#*|}"
+    else
+        wiz_tz=$(echo "$resp_gemini" | grep -oP '"rtQCxc":\s*\K-?\d+' | head -n 1)
+        wiz_cc=""
+    fi
+    [ -n "$wiz_tz" ] && GEMINI_TZ="${wiz_tz}"
+    [ -n "$wiz_cc" ] && [ "$wiz_cc" != "ZZ" ] && GEMINI_TZ="${GEMINI_TZ}/${wiz_cc}"
+    debug_log "Gemini WIZ tz=${wiz_tz} cc=${wiz_cc} cf_loc=${CURRENT_LOC}"
+
+    if [[ "$wiz_cc" =~ ^(CN|HK|MO|RU|IR|KP|BY|SY|CU)$ ]]; then
+        DIAG_MSG="⚠️ Gemini WIZ_global_data 判定为受限国家 (${wiz_cc})"
+        return 1
+    fi
+
+    if [ "$wiz_tz" = "-180" ]; then
+        local hel_offset
+        hel_offset=$(TZ=Europe/Helsinki date +%z 2>/dev/null || echo "")
+        if [[ "$CURRENT_LOC" =~ ^(DE|NL|FR|GB|SE|NO|DK|PL|CZ|AT|CH|IT|ES|PT|US|CA|AU|JP|SG|KR|TW)$ ]] || \
+           { [ "$CURRENT_LOC" = "FI" ] && [ "$hel_offset" = "+0200" ]; }; then
+            DIAG_MSG="⚠️ Gemini 判定出口归属俄区时区 (rtQCxc=-180/UTC+3, 实际CF_LOC=${CURRENT_LOC})"
+            return 1
+        fi
+    fi
+
     local resp_api api_code
     build_curl_args "$ACTIVE_STACK" "generativelanguage.googleapis.com"
     resp_api=$(curl -s "${CURL_ARGS[@]}" \
@@ -430,6 +498,7 @@ evaluate_network() {
     DIAG_MSG=""
     YT_REGION="未知"
     GOOGLE_GEO="未知"
+    GEMINI_TZ="未知"
 
     if [ "$CURRENT_IP" = "未知IP" ] || [[ ! "$CURRENT_WARP" =~ ^(on|plus)$ ]]; then
         DIAG_MSG="❌ WARP 代理隧道未连通或未生效 (warp=${CURRENT_WARP}, IP=${CURRENT_IP})"
@@ -551,14 +620,14 @@ while [ "$attempt" -le "$MAX_RETRIES" ]; do
 
     if evaluate_network; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✅ [状态健康] ${DIAG_MSG}"
-        echo "   📊 运行模式: ${MODE_DESC} [${ACTIVE_STACK_LABEL}] | 出口IP: ${CURRENT_IP} (CF机房:${CURRENT_LOC}/${CURRENT_COLO} / YT归属:${YT_REGION} / Google定位:${GOOGLE_GEO}) | 累计检测:${TOTAL_CHECKS} (自愈:${TOTAL_HEALS})"
+        echo "   📊 运行模式: ${MODE_DESC} [${ACTIVE_STACK_LABEL}] | 出口IP: ${CURRENT_IP} (CF机房:${CURRENT_LOC}/${CURRENT_COLO} / YT归属:${YT_REGION} / Google定位:${GOOGLE_GEO} / Gemini时区:${GEMINI_TZ}) | 累计检测:${TOTAL_CHECKS} (自愈:${TOTAL_HEALS})"
         save_stats
         exit 0
     else
         TOTAL_FAILS=$((TOTAL_FAILS + 1))
         LAST_FAIL_TIME=$(date '+%Y-%m-%d %H:%M:%S')
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] ❌ [触发风控] 尝试 (${attempt}/${MAX_RETRIES}): ${DIAG_MSG}"
-        echo "   🔍 当前状态: 模式=${MODE_DESC} [${ACTIVE_STACK_LABEL}] | IP=${CURRENT_IP} | CF机房=${CURRENT_LOC}/${CURRENT_COLO} | YT归属=${YT_REGION} | Google定位=${GOOGLE_GEO}"
+        echo "   🔍 当前状态: 模式=${MODE_DESC} [${ACTIVE_STACK_LABEL}] | IP=${CURRENT_IP} | CF机房=${CURRENT_LOC}/${CURRENT_COLO} | YT归属=${YT_REGION} | Google定位=${GOOGLE_GEO} | Gemini时区=${GEMINI_TZ}"
 
         if [ "$attempt" -lt "$MAX_RETRIES" ]; then
             echo "   ⚡ 正在重启/重置 WARP 尝试更换 IP 避开风控..."

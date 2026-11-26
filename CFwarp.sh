@@ -554,6 +554,21 @@ if [[ "$web_code" -ge 400 ]] 2>/dev/null || echo "$web_url" | grep -qiE "gemini\
 gemini="杯具，当前IP受限于Gemini地区或风控 (HTTP ${web_code})"
 return
 fi
+local wiz_tz wiz_cc hel_off cf_loc_now
+cf_loc_now=$(curl -s "${c_args[@]}" --connect-timeout 4 --max-time 5 "https://www.cloudflare.com/cdn-cgi/trace" 2>/dev/null | grep -E '^loc=' | cut -d= -f2 | tr -d '\r\n')
+wiz_tz=$(echo "$web_res" | grep -oP '"rtQCxc":\s*\K-?\d+' | head -n 1)
+wiz_cc=$(echo "$web_res" | grep -oP '"vXmutd":"[^"]*?\\"\K[A-Z]{2}(?=\\")' | head -n 1)
+if [[ "$wiz_cc" =~ ^(CN|HK|MO|RU|IR|KP|BY|SY|CU)$ ]]; then
+gemini="杯具，Gemini画像国家受限 (${wiz_cc})"
+return
+fi
+if [[ "$wiz_tz" == "-180" ]]; then
+hel_off=$(TZ=Europe/Helsinki date +%z 2>/dev/null || echo "")
+if [[ "$cf_loc_now" =~ ^(DE|NL|FR|GB|SE|NO|DK|PL|CZ|AT|CH|IT|ES|PT|US|CA|AU|JP|SG|KR|TW)$ ]] || [[ "$cf_loc_now" == "FI" && "$hel_off" == "+0200" ]]; then
+gemini="遗憾，当前IP被Gemini识别为俄区时区 (rtQCxc=-180)"
+return
+fi
+fi
 api_res=$(curl -s "${c_args[@]}" --connect-timeout 6 --max-time 8 -w "\n__CODE__:%{http_code}" "https://generativelanguage.googleapis.com/v1beta/models" 2>/dev/null)
 api_code=$(echo "$api_res" | grep "__CODE__:" | tail -n 1 | cut -d':' -f2 | tr -d ' \r\n')
 if [[ -z "$api_code" || "$api_code" == "000" || "$api_code" == "429" ]] || [[ "$api_code" -ge 500 ]] 2>/dev/null; then

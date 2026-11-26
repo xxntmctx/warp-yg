@@ -1,44 +1,44 @@
 ---
 name: warp-yg-management
 description: >-
-  Manage, configure, and maintain Cloudflare WARP client configurations on VPS.
-  Enables routing setup, Netflix/ChatGPT unlock detection, local Socks5 proxy,
-  and background monitoring.
+  Manage, configure, diagnose, and maintain Cloudflare WARP (warp-go, wgcf,
+  warp-svc, wireproxy) on Linux VPS with CFwarp.sh, gemini.sh (1Panel/Cron
+  Google/Gemini/YouTube probe & self-heal), and diag.sh.
 ---
 
-# Cloudflare WARP 管理与诊断工具 (warp-yg)
+# Cloudflare WARP 管理、Gemini 探测自愈与排障指南 (warp-yg)
 
-该技能提供了一套在 Linux VPS 机器（支持 Ubuntu, Debian, CentOS）上使用 `CFwarp.sh` 脚本对 Cloudflare WARP 进行一键配置、维护及状态诊断的操作规范。
+本仓库提供 Linux VPS（Debian 10–13 / Ubuntu 20–24 / CentOS）下的 Cloudflare WARP 多方案部署、Gemini/Netflix/ChatGPT 解锁检测，以及面向 1Panel/Cron 的自动巡检自愈能力。
 
-## 运行环境与前置依赖
+## 核心组件与职责
 
-脚本依赖以下系统包，主要运行于 Linux 系统，且必须以 `root` 用户执行：
-- `curl`, `wget`, `openssl`, `bc`, `python3`, `screen`, `qrencode`
+| 文件 | 职责定位 | 运行方式 |
+| :--- | :--- | :--- |
+| `CFwarp.sh` | 主交互式管理脚本（安装后快捷命令 `/usr/bin/cf`），涵盖方案一 (`warp-go`/`wgcf`)、方案二 (`Socks5-WARP`)、方案三 (WireGuard 配置) 与工具箱 | `bash CFwarp.sh` 或 `cf` |
+| `gemini.sh` | 1Panel/Cron 专用 Google / Gemini / YouTube 五维深度探测与分级自愈脚本 | `bash gemini.sh [--ipv6\|--ipv4] [--port N] [--debug]` |
+| `diag.sh` | 只读对照诊断脚本，采集端口归属、`v2node` 路由（已脱敏）、双栈 Trace、YouTube 裸请求及 Gemini `WIZ_global_data` | `bash diag.sh [port]` |
+| `.gitignore` | 隔离本地敏感实测日志目录 `tests/` 及 `.env` / `.dev.vars` / `*.log` / `*.key` / `*.pem` | Git 自动忽略 |
 
-## 常见操作指引
+## 核心工作流
 
-主要的 CLI 入口是当前仓库下的 `CFwarp.sh`（在安装后会生成软链接 `/usr/bin/cf`）。
+### 1. 主菜单与状态面板 (`CFwarp.sh`)
+- 解锁检测并行覆盖 **Netflix**、**ChatGPT** 与 **Gemini**（通过 `get_ip_geo_info` 使用 `python3` 安全解析 `ip-api.com` / `api.ip.sb`）。
+- `ShowSOCKS5()` 会通过 `ss -ntlp` 识别监听端口的真实托管进程（`wireproxy` 或 `warp-svc`），并同时探测 IPv6 与 IPv4 出口。
+- 菜单 `6. WARP其他选项`：
+  - **选项 8 (`gemini_monitor_tool`)**：安装/更新 `/usr/local/bin/warp-gemini-check.sh`、配置每 10 分钟 Cron 自愈、查看 `/var/log/warp-gemini.log`。
+  - **选项 9 (`toggle_ip_priority`)**：切换 `/etc/gai.conf` 的 IPv6/IPv4 优先级，并持久化至 `/root/warpip/ip_prefer`，防止方案一切换时 `first4()` 强制覆盖为 IPv4 优先。
 
-### 1. 启动交互菜单
-在 VPS 环境中执行以下命令进入交互菜单：
-```bash
-bash CFwarp.sh
-# 或在全局安装后直接运行
-cf
-```
+### 2. 深度巡检与自愈 (`gemini.sh`)
+- **真实通道优先**：`socks5`/`wireproxy` 模式先探测 `Socks5h(auto)`（与 `v2node`/Xray/sing-box 实际域名转发路径一致），再结合 `--resolve` 校验 IPv6 优先级。
+- **五维防假阳性判定**：
+  1. WARP 隧道：`cdn-cgi/trace` 验证 `warp=on|plus` 与有效出口 IP。
+  2. CF 边缘地区：拦截受限国家代码（`CN|HK|MO|RU|IR|KP|BY|SY|CU`）。
+  3. YouTube 裸请求 + Cookie 校验：先发无 Cookie 裸 `HEAD` 探测真实 `Location` 是否暴露 `hl=ru`；再校验 `consent` 与 `contentRegion`。
+  4. Google 搜索：拦截 `429`/`403`/`5xx`/`sorry/index`/`reCAPTCHA`，命中 `/httpservice/retry/enablejs` 时如实标注 `JS挑战` 而非误报 `正常`。
+  5. Gemini 网页 + API + `WIZ_global_data`：拦截非 `200`、异常跳转及 `generativelanguage.googleapis.com` 地区封锁；解析 `WIZ_global_data` 中的 `rtQCxc`（如芬兰冬令时 `+0200` 却被判 `-180` 莫斯科 `UTC+3`）与 `vXmutd` 国家代码。
+- **按真实进程分级自愈**：`wireproxy` 轮换 `/etc/wireguard/proxy.conf` 的 `Endpoint` 并重启；`warp-svc` 先重连、第 2 次起注销重注册新设备（非 `Limited` 付费账户）；`warp-go`/`wgcf` 轮换 Endpoint。
 
-### 2. 核心功能方案
-- **方案一（安装/切换内核）：** 使用 `warp-go` 或 `wgcf` (WireGuard) 将出站流量接管。支持配置单栈 IPv4、单栈 IPv6 或双栈 IPv4+IPv6。
-- **方案二（Socks5 本地代理）：** 安装官方 `cloudflare-warp` 客户端，在本地监听指定的 Socks5 代理端口（默认 40000），仅作为本地代理而不接管全局出站流量。
-- **方案三（提取配置文件）：** 提取 WARP-Wireguard 配置文件并生成二维码，方便其他设备扫码或导入使用。
+## 常见故障定位速查
 
-### 3. 系统维护与优化
-- **连接自动监测（`WARP-UP.sh`）：** 使用 `screen` 后台运行连接守护，定时检测连接状态。当连接中断时进行重试，连续 5 次重试失败会自动关闭并恢复 VPS 的原生 IP。
-- **网络优化（MTU 自动设置）：** 动态测试最佳 MTU 吞吐值并写入配置文件中。
-- **账户升级：** 支持升级/切换为 WARP 普通账户、WARP+ 账户（需提供 26 位 License 密钥）或 WARP Teams (Zero Trust 团队 Token) 账户。
-- **内核互换：** 允许在 `warp-go` 内核和 `wgcf-warp` 内核之间一键切换。
-
-## 诊断与解锁报告检测
-在脚本启动或查询状态时，会对以下核心服务进行解锁检测：
-- **Netflix (NF) 解锁检测：** 通过测试 `https://www.netflix.com/title/70143836`。返回 `200`（完整解锁非自制剧）、`404`（仅自制剧）、`403`（不能看）。
-- **ChatGPT 解锁检测：** 检测 `https://chat.openai.com` 与客户端 `https://ios.chat.openai.com` 的连接情况，分析是否可以完整解锁网页和客户端。
+1. **自愈多次但出口 IP 不变**：用 `ss -ntlp | grep 40000` 检查是否同时运行了 `wireproxy` 与 `warp-svc` 抢占端口；`wireproxy` 使用固定 WireGuard 密钥且默认走 IPv4，推荐停用冲突进程并交由 `warp-svc` 托管（`systemctl disable --now wireproxy && systemctl restart warp-svc`）。
+2. **`curl gemini.google.com/app` 返回 200 但浏览器提示不支持地区**：说明前端 JS 读取 `WIZ_global_data` 后渲染受限，使用 `bash gemini.sh --debug` 或 `bash diag.sh` 核对 `rtQCxc` 与 YouTube 裸请求 `hl=`。

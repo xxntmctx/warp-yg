@@ -18,6 +18,21 @@ bash <(curl -Ls https://raw.githubusercontent.com/xxntmctx/warp-yg/main/CFwarp.s
  ```systemctl stop wg-quick@wgcf```
 
 
+### 1.1、新增：Gemini 解锁检测、IPv6 优先与 1Panel/Cron 自愈
+
+- **主脚本内置 Gemini 检测与 IPv4/IPv6 优先级切换**：运行 `cf` 后，面板已同步检测 `Netflix`、`ChatGPT` 与 `Gemini（网页 + API + WIZ 时区/地区画像）`；菜单 `6. WARP其他选项` 新增第 `8` 项（一键部署/运行深度巡检自愈）与第 `9` 项（切换 `/etc/gai.conf` 系统 IPv4/IPv6 优先级并持久化至 `/root/warpip/ip_prefer`）。
+- **1Panel / Cron 深度巡检自愈脚本（`gemini.sh`）**：
+  - 自动识别端口实际托管进程（`wireproxy` / `warp-svc` / `warp-go` / `wgcf`），避免双客户端抢占 `40000` 端口导致重启无效。
+  - 默认 `PREFER_IPV6=true`（支持 `--ipv6` / `--ipv4` / `--port <N>` / `--debug`），并优先验证代理真实转发路径 `Socks5h(auto)`。
+  - 集成五维防假阳性检测：YouTube 裸请求 `hl=ru` 暴露检测 + Cookie 区域校验、Google `429`/`sorry` 拦截与 `enablejs` 如实标注、Gemini 网页/API 状态码及 `WIZ_global_data`（`rtQCxc` 时区偏移与 `vXmutd` 国家代码）拦截。
+  - 1Panel 定时任务可直接执行：`bash /usr/local/bin/warp-gemini-check.sh --ipv6`（或直接将 [gemini.sh](gemini.sh) 内容粘贴至 1Panel Shell 定时任务）。
+- **只读双机对照诊断脚本（`diag.sh`）**：用于快速对比正常机与异常机的 `v2node` 路由、双栈 Trace、YouTube 裸请求与 `WIZ_global_data` 关键字段，自动脱敏凭据。
+
+```bash
+curl -sSL https://raw.githubusercontent.com/xxntmctx/warp-yg/main/diag.sh | bash
+```
+
+
 ---------------------------------------------------------------------
 
 ### 二、多平台优选WARP对端IP + 无限生成WARP-Wireguard配置 一键脚本，建议苹果手机与安卓手机在本地网络使用

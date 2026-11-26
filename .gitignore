@@ -1,0 +1,6 @@
+tests/
+.env
+.dev.vars
+*.log
+*.key
+*.pem
