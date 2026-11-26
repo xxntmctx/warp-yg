@@ -534,7 +534,7 @@ evaluate_network() {
         return 1
     fi
 
-    if [ "$WARP_MODE" != "direct-socks5" ] && [[ ! "$CURRENT_WARP" =~ ^(on|plus)$ ]]; then
+    if [ "$WARP_MODE" != "direct-socks5" ] && [ "$WARP_MODE" != "direct-check" ] && [[ ! "$CURRENT_WARP" =~ ^(on|plus)$ ]]; then
         DIAG_MSG="❌ WARP 代理隧道未连通或未生效 (warp=${CURRENT_WARP}, IP=${CURRENT_IP})"
         return 1
     fi
