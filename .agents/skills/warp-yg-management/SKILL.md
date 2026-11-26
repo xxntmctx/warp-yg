@@ -11,14 +11,16 @@ description: >-
 ## 1. 快速定位文件
 
 - 主脚本：[CFwarp.sh](../../CFwarp.sh)（快捷方式 `/usr/bin/cf`）
-- 1Panel / Cron 自愈巡检：[gemini.sh](../../gemini.sh)（部署路径 `/usr/local/bin/warp-gemini-check.sh`）
+- 原生直连托底 Socks5：[direct-socks5.py](../../direct-socks5.py)（部署路径 `/usr/local/bin/warp-direct-socks5.py`，配置 `/etc/warp-direct-socks5.conf`）
+- 1Panel / Cron 自愈巡检：[gemini.sh](../../gemini.sh)（部署路径 `/usr/local/bin/warp-gemini-check.sh`，配置 `/etc/warp-monitor.conf`）
 - 双机只读对照诊断：[diag.sh](../../diag.sh)
 
 ## 2. 标准运维命令
 
 - **一键更新 `cf`**：在 `cf` 菜单选择 `8`，或执行：
   `curl -sSL -o /usr/bin/cf "https://raw.githubusercontent.com/xxntmctx/warp-yg/main/CFwarp.sh?t=$(date +%s)" && chmod +x /usr/bin/cf && cf`
-- **开启 1Panel / Cron 巡检**：在 `cf` 菜单选择 `6` -> `8` -> `1`（立即测试）或 `2`（写入每 10 分钟 Cron）；1Panel Shell 任务填写 `bash /usr/local/bin/warp-gemini-check.sh --ipv6`。
+- **开启原生直连 Socks5 托底（不改 `v2node`）**：在 `cf` 菜单选择 `6` -> `10` -> `1`，选择 `prefer_v6` / `prefer_v4` / `v6_only` / `v4_only` 即可由 `warp-direct-socks5` 接管 `127.0.0.1:40000`。
+- **开启 1Panel / Cron 巡检**：在 `cf` 菜单选择 `6` -> `8` -> `1`（立即测试）、`2`（写入每 10 分钟 Cron）或 `5`（开关 `AUTO_FALLBACK_DIRECT`）；1Panel Shell 任务填写 `bash /usr/local/bin/warp-gemini-check.sh --ipv6`。
 - **调试模式运行巡检**：`bash /usr/local/bin/warp-gemini-check.sh --ipv6 --debug`
 
 ## 3. 核心排障准则

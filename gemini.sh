@@ -11,10 +11,20 @@ export LANG=en_US.UTF-8
 # ----------------- 基础参数配置 -----------------
 DEFAULT_SOCKS5_PORT="${DEFAULT_SOCKS5_PORT:-40000}"
 WIREPROXY_CONF="${WIREPROXY_CONF:-/etc/wireguard/proxy.conf}"
+DIRECT_SOCKS5_CONF="${DIRECT_SOCKS5_CONF:-/etc/warp-direct-socks5.conf}"
+DIRECT_SOCKS5_SCRIPT="${DIRECT_SOCKS5_SCRIPT:-/usr/local/bin/warp-direct-socks5.py}"
+MONITOR_CONF="${MONITOR_CONF:-/etc/warp-monitor.conf}"
 PREFER_IPV6="${PREFER_IPV6:-true}"
+AUTO_FALLBACK_DIRECT="${AUTO_FALLBACK_DIRECT:-false}"
+DIRECT_SOCKS5_STACK="${DIRECT_SOCKS5_STACK:-prefer_v6}"
 DEBUG_MODE="${DEBUG_MODE:-false}"
 TIMEOUT=10
 MAX_RETRIES=6
+
+if [ -f "${MONITOR_CONF}" ]; then
+    # shellcheck disable=SC1090
+    source "${MONITOR_CONF}" 2>/dev/null || true
+fi
 
 STATE_DIR="/tmp/warp_monitor"
 STATS_FILE="${STATE_DIR}/stats.dat"
@@ -43,6 +53,8 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --ipv6|-6) PREFER_IPV6="true" ;;
         --ipv4|-4) PREFER_IPV6="false" ;;
+        --auto-fallback) AUTO_FALLBACK_DIRECT="true" ;;
+        --no-fallback) AUTO_FALLBACK_DIRECT="false" ;;
         --debug) DEBUG_MODE="true" ;;
         --port)
             shift
@@ -95,7 +107,18 @@ detect_warp_mode() {
     SOCKS5_PORT="${DEFAULT_SOCKS5_PORT}"
     MODE_DESC=""
 
-    local listener_line wp_port warp_port
+    local listener_line wp_port warp_port d_port d_stack
+    if systemctl is-active --quiet warp-direct-socks5 2>/dev/null || pgrep -f "warp-direct-socks5\.py" >/dev/null 2>&1; then
+        WARP_MODE="direct-socks5"
+        if [ -f "${DIRECT_SOCKS5_CONF}" ]; then
+            d_port=$(grep -E '^LISTEN_PORT=' "${DIRECT_SOCKS5_CONF}" | cut -d= -f2 | tr -d '"'\'' \r\n')
+            d_stack=$(grep -E '^STACK_MODE=' "${DIRECT_SOCKS5_CONF}" | cut -d= -f2 | tr -d '"'\'' \r\n')
+            [ -n "$d_port" ] && SOCKS5_PORT="$d_port"
+        fi
+        MODE_DESC="Direct-Socks5 原生直连托底 (127.0.0.1:${SOCKS5_PORT}, ${d_stack:-prefer_v6})"
+        return 0
+    fi
+
     listener_line=$(ss -ntlp 2>/dev/null | grep -E "wireproxy|warp-svc" | head -n 1)
 
     if echo "$listener_line" | grep -q "wireproxy"; then
@@ -180,7 +203,7 @@ build_curl_args() {
     shift
     CURL_ARGS=()
 
-    if [ "$WARP_MODE" = "wireproxy" ] || [ "$WARP_MODE" = "socks5" ]; then
+    if [ "$WARP_MODE" = "wireproxy" ] || [ "$WARP_MODE" = "socks5" ] || [ "$WARP_MODE" = "direct-socks5" ]; then
         if [ "$stack" = "auto" ]; then
             CURL_ARGS=(--socks5-hostname "127.0.0.1:${SOCKS5_PORT}")
             return 0
@@ -228,15 +251,21 @@ get_warp_network_info() {
     ACTIVE_STACK=""
     ACTIVE_STACK_LABEL="未知"
 
-    if [ "$WARP_MODE" = "wireproxy" ] || [ "$WARP_MODE" = "socks5" ]; then
+    if [ "$WARP_MODE" = "wireproxy" ] || [ "$WARP_MODE" = "socks5" ] || [ "$WARP_MODE" = "direct-socks5" ]; then
         fetch_trace_for_stack "auto"
-        if [[ "$CURRENT_WARP" =~ ^(on|plus)$ ]] && [ -n "$CURRENT_IP" ]; then
+        local is_valid_trace=0
+        if [ "$WARP_MODE" = "direct-socks5" ] && [ -n "$CURRENT_IP" ]; then
+            is_valid_trace=1
+        elif [[ "$CURRENT_WARP" =~ ^(on|plus)$ ]] && [ -n "$CURRENT_IP" ]; then
+            is_valid_trace=1
+        fi
+        if [ "$is_valid_trace" -eq 1 ]; then
             ACTIVE_STACK="auto"
             if [[ "$CURRENT_IP" == *:* ]]; then
                 ACTIVE_STACK_LABEL="IPv6(Auto)"
             else
                 ACTIVE_STACK_LABEL="IPv4(Auto)"
-                if [ "${PREFER_IPV6}" = "true" ]; then
+                if [ "${PREFER_IPV6}" = "true" ] && [ "$WARP_MODE" != "direct-socks5" ]; then
                     local auto_v4_ip="$CURRENT_IP"
                     fetch_trace_for_stack "6"
                     if [[ "$CURRENT_WARP" =~ ^(on|plus)$ ]] && [[ "$CURRENT_IP" == *:* ]]; then
@@ -500,7 +529,12 @@ evaluate_network() {
     GOOGLE_GEO="未知"
     GEMINI_TZ="未知"
 
-    if [ "$CURRENT_IP" = "未知IP" ] || [[ ! "$CURRENT_WARP" =~ ^(on|plus)$ ]]; then
+    if [ "$CURRENT_IP" = "未知IP" ] || [ -z "$CURRENT_IP" ]; then
+        DIAG_MSG="❌ 代理通道不可达 (IP=${CURRENT_IP:-空})"
+        return 1
+    fi
+
+    if [ "$WARP_MODE" != "direct-socks5" ] && [[ ! "$CURRENT_WARP" =~ ^(on|plus)$ ]]; then
         DIAG_MSG="❌ WARP 代理隧道未连通或未生效 (warp=${CURRENT_WARP}, IP=${CURRENT_IP})"
         return 1
     fi
@@ -532,7 +566,12 @@ restart_wireproxy_service() {
 restart_warp_core() {
     local current_attempt="${1:-1}"
 
-    if [ "$WARP_MODE" = "wireproxy" ]; then
+    if [ "$WARP_MODE" = "direct-socks5" ]; then
+        echo "   -> [Direct-Socks5 模式] 正在重启 warp-direct-socks5 服务..."
+        systemctl restart warp-direct-socks5 >/dev/null 2>&1 || true
+        sleep 2
+
+    elif [ "$WARP_MODE" = "wireproxy" ]; then
         if [ "$current_attempt" -eq 1 ]; then
             echo "   -> [WireProxy 模式] 正在重启 wireproxy 服务刷新隧道..."
             restart_wireproxy_service
@@ -638,7 +677,83 @@ while [ "$attempt" -le "$MAX_RETRIES" ]; do
     fi
 done
 
+fallback_to_direct_socks5() {
+    [ "${AUTO_FALLBACK_DIRECT}" = "true" ] || return 1
+    { [ "$WARP_MODE" = "socks5" ] || [ "$WARP_MODE" = "wireproxy" ]; } || return 1
+
+    echo "   🔄 [自动降级评估] WARP 已达重试上限，正在检测本机原生直连是否健康..."
+    local old_mode="$WARP_MODE" old_stack="$ACTIVE_STACK"
+    WARP_MODE="direct-check"
+    ACTIVE_STACK="6"
+    [ "${PREFER_IPV6}" != "true" ] && ACTIVE_STACK="4"
+
+    fetch_trace_for_stack "$ACTIVE_STACK"
+    if [ -z "$CURRENT_IP" ]; then
+        ACTIVE_STACK="4"
+        fetch_trace_for_stack "$ACTIVE_STACK"
+    fi
+
+    if [ -n "$CURRENT_IP" ] && evaluate_network; then
+        echo "   ✅ 本机原生直连健康 (${CURRENT_IP} / Gemini时区=${GEMINI_TZ})，正在切换 127.0.0.1:${SOCKS5_PORT} 至 Direct-Socks5 托底模式..."
+        if [ ! -s "${DIRECT_SOCKS5_SCRIPT}" ]; then
+            curl -sSL -o "${DIRECT_SOCKS5_SCRIPT}" "https://raw.githubusercontent.com/xxntmctx/warp-yg/main/direct-socks5.py" && chmod +x "${DIRECT_SOCKS5_SCRIPT}"
+        fi
+        if [ ! -s "${DIRECT_SOCKS5_SCRIPT}" ]; then
+            WARP_MODE="$old_mode"; ACTIVE_STACK="$old_stack"
+            return 1
+        fi
+        cat <<EOF > "${DIRECT_SOCKS5_CONF}"
+LISTEN_HOST="127.0.0.1"
+LISTEN_PORT="${SOCKS5_PORT}"
+STACK_MODE="${DIRECT_SOCKS5_STACK}"
+CONNECT_TIMEOUT="6.0"
+DEBUG="${DEBUG_MODE}"
+EOF
+        cat <<EOF > /etc/systemd/system/warp-direct-socks5.service
+[Unit]
+Description=CFwarp Direct-Egress SOCKS5 Fallback Proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/env python3 ${DIRECT_SOCKS5_SCRIPT} --config ${DIRECT_SOCKS5_CONF}
+Restart=always
+RestartSec=2
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        systemctl disable --now wireproxy >/dev/null 2>&1 || true
+        systemctl stop warp-svc >/dev/null 2>&1 || true
+        systemctl daemon-reload
+        systemctl enable --now warp-direct-socks5 >/dev/null 2>&1
+        sleep 2
+        if systemctl is-active --quiet warp-direct-socks5; then
+            WARP_MODE="direct-socks5"
+            MODE_DESC="Direct-Socks5 原生直连托底 (127.0.0.1:${SOCKS5_PORT}, ${DIRECT_SOCKS5_STACK})"
+            get_warp_network_info
+            if evaluate_network; then
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✅ [降级托底成功] 127.0.0.1:${SOCKS5_PORT} 已安全切换至本机原生直连"
+                echo "   📊 运行模式: ${MODE_DESC} [${ACTIVE_STACK_LABEL}] | 出口IP: ${CURRENT_IP} (CF机房:${CURRENT_LOC}/${CURRENT_COLO} / YT归属:${YT_REGION} / Google定位:${GOOGLE_GEO} / Gemini时区:${GEMINI_TZ}) | 累计检测:${TOTAL_CHECKS} (自愈:${TOTAL_HEALS})"
+                return 0
+            fi
+        fi
+    else
+        echo "   ⚠️ 本机原生直连同样未通过风控校验 (${DIAG_MSG})，保持原模式。"
+    fi
+
+    WARP_MODE="$old_mode"
+    ACTIVE_STACK="$old_stack"
+    return 1
+}
+
 save_stats
+if fallback_to_direct_socks5; then
+    save_stats
+    exit 0
+fi
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] 🚫 [自愈耗尽] 重试 ${MAX_RETRIES} 次后依然命中 Google/Gemini 风控。"
 echo "   🛠 排障快照: mode=${WARP_MODE} prefer_ipv6=${PREFER_IPV6} stack=${ACTIVE_STACK_LABEL} port=${SOCKS5_PORT} ip=${CURRENT_IP} loc=${CURRENT_LOC} colo=${CURRENT_COLO} yt=${YT_REGION} google=${GOOGLE_GEO}"
 exit 1

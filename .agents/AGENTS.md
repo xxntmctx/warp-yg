@@ -5,7 +5,8 @@
 本仓库维护运行于 Linux VPS（Debian / Ubuntu / CentOS）的 Cloudflare WARP 一键管理、Gemini/ChatGPT/Netflix 解锁检测与 1Panel/Cron 自动化巡检自愈体系：
 
 - `CFwarp.sh`：交互式主管理脚本（部署目标 `/usr/bin/cf`），保持与现有菜单编号及双核心架构（`ONEWARPGO` / `ONEWGCFWARP`）向后兼容。
-- `gemini.sh`：独立自包含的五维深度巡检与自愈脚本（部署目标 `/usr/local/bin/warp-gemini-check.sh`），必须同时支持无参运行（适配 1Panel 编辑器直接粘贴执行）和参数化运行（`--ipv6` / `--ipv4` / `--port` / `--debug`）。
+- `direct-socks5.py`：轻量级原生直连 Socks5 托底代理（部署目标 `/usr/local/bin/warp-direct-socks5.py`，配置 `/etc/warp-direct-socks5.conf`，服务 `warp-direct-socks5.service`），在本地 WARP POP 被标记为受限地区而原生 IP 干净时，零改动承接 `127.0.0.1:40000` 流量。
+- `gemini.sh`：独立自包含的五维深度巡检与自愈脚本（部署目标 `/usr/local/bin/warp-gemini-check.sh`），支持无参运行（适配 1Panel）、`/etc/warp-monitor.conf` 配置与参数化运行（`--ipv6` / `--ipv4` / `--port` / `--auto-fallback` / `--debug`）。
 - `diag.sh`：只读跨机对照诊断脚本，严禁在脚本内执行任何写入/重启/修改系统配置的操作。
 - `.agents/`：仓库自包含 AI 工程规范与领域技能目录，确保任意协作 Agent 接手时零上下文丢失。
 - `tests/`：**本地敏感测试日志隔离目录**，已在 `.gitignore` 中屏蔽。

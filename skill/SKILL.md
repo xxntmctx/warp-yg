@@ -15,7 +15,8 @@ description: >-
 | 文件 | 职责定位 | 运行方式 |
 | :--- | :--- | :--- |
 | `CFwarp.sh` | 主交互式管理脚本（安装后快捷命令 `/usr/bin/cf`），涵盖方案一 (`warp-go`/`wgcf`)、方案二 (`Socks5-WARP`)、方案三 (WireGuard 配置) 与工具箱 | `bash CFwarp.sh` 或 `cf` |
-| `gemini.sh` | 1Panel/Cron 专用 Google / Gemini / YouTube 五维深度探测与分级自愈脚本 | `bash gemini.sh [--ipv6\|--ipv4] [--port N] [--debug]` |
+| `direct-socks5.py` | 原生直连 Socks5 托底代理（`/usr/local/bin/warp-direct-socks5.py`），在 WARP POP 被标受限而原生 IP 干净时零改动接管 `40000` 端口 | `cf -> 6 -> 10` 或 `systemctl start warp-direct-socks5` |
+| `gemini.sh` | 1Panel/Cron 专用 Google / Gemini / YouTube 五维深度探测与分级自愈脚本（支持 `/etc/warp-monitor.conf` 与 `--auto-fallback`） | `bash gemini.sh [--ipv6\|--ipv4] [--port N] [--auto-fallback] [--debug]` |
 | `diag.sh` | 只读对照诊断脚本，采集端口归属、`v2node` 路由（已脱敏）、双栈 Trace、YouTube 裸请求及 Gemini `WIZ_global_data` | `bash diag.sh [port]` |
 | `.gitignore` | 隔离本地敏感实测日志目录 `tests/` 及 `.env` / `.dev.vars` / `*.log` / `*.key` / `*.pem` | Git 自动忽略 |
 

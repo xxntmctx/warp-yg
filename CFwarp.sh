@@ -317,10 +317,15 @@ esac
 gemini_monitor_tool(){
 local gscript="/usr/local/bin/warp-gemini-check.sh"
 local gurl="https://raw.githubusercontent.com/xxntmctx/warp-yg/main/gemini.sh"
+local mconf="/etc/warp-monitor.conf"
+local cur_fb="false"
+[[ -f "$mconf" ]] && cur_fb=$(grep -E '^AUTO_FALLBACK_DIRECT=' "$mconf" 2>/dev/null | cut -d= -f2 | tr -d '"'\'' \r\n')
+[[ -z "$cur_fb" ]] && cur_fb="false"
 green "1. 安装/更新并立即执行一次 Google/Gemini/YouTube 深度巡检 (IPv6 优先)"
 green "2. 配置每 10 分钟 Cron 自动巡检自愈"
 green "3. 卸载 Cron 自动巡检"
 green "4. 查看最近巡检日志 (/var/log/warp-gemini.log)"
+green "5. 切换 WARP 耗尽时自动降级直连托底 (当前: ${cur_fb})"
 green "0. 返回上一层"
 readp "请选择：" gopt
 case "$gopt" in
@@ -350,6 +355,171 @@ green "已移除 Cron 自动巡检任务"
 ;;
 4 )
 [[ -f /var/log/warp-gemini.log ]] && tail -n 30 /var/log/warp-gemini.log || yellow "暂无巡检日志"
+;;
+5 )
+local new_fb="true"
+[[ "$cur_fb" == "true" ]] && new_fb="false"
+touch "$mconf"
+sed -i '/^AUTO_FALLBACK_DIRECT=/d' "$mconf" 2>/dev/null
+echo "AUTO_FALLBACK_DIRECT=\"${new_fb}\"" >> "$mconf"
+green "已将 AUTO_FALLBACK_DIRECT 设置为 ${new_fb} (配置文件: $mconf)"
+;;
+* )
+cf
+;;
+esac
+}
+
+direct_socks5_write_service(){
+local dscript="/usr/local/bin/warp-direct-socks5.py"
+local dconf="/etc/warp-direct-socks5.conf"
+local dsvc="/etc/systemd/system/warp-direct-socks5.service"
+local durl="https://raw.githubusercontent.com/xxntmctx/warp-yg/main/direct-socks5.py"
+if [[ ! -s "$dscript" ]] || [[ "$1" == "update" ]]; then
+curl -sSL -o "$dscript" "$durl" && chmod +x "$dscript"
+fi
+if [[ ! -s "$dscript" ]]; then
+red "下载 direct-socks5.py 失败，请检查网络"
+return 1
+fi
+cat <<EOF > "$dsvc"
+[Unit]
+Description=CFwarp Direct-Egress SOCKS5 Fallback Proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/env python3 ${dscript} --config ${dconf}
+Restart=always
+RestartSec=2
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+}
+
+direct_socks5_menu(){
+local dscript="/usr/local/bin/warp-direct-socks5.py"
+local dconf="/etc/warp-direct-socks5.conf"
+local cur_port="40000" cur_stack="prefer_v6" cur_dbg="false"
+if [[ -f "$dconf" ]]; then
+cur_port=$(grep -E '^LISTEN_PORT=' "$dconf" | cut -d= -f2 | tr -d '"'\'' \r\n')
+cur_stack=$(grep -E '^STACK_MODE=' "$dconf" | cut -d= -f2 | tr -d '"'\'' \r\n')
+cur_dbg=$(grep -E '^DEBUG=' "$dconf" | cut -d= -f2 | tr -d '"'\'' \r\n')
+fi
+cur_port="${cur_port:-40000}"
+cur_stack="${cur_stack:-prefer_v6}"
+cur_dbg="${cur_dbg:-false}"
+local st="未运行"
+systemctl is-active --quiet warp-direct-socks5 && st="运行中"
+white "-----------------------------------------------"
+yellow "当前直连托底状态：${st} | 端口：127.0.0.1:${cur_port} | 策略：${cur_stack} | Debug：${cur_dbg}"
+white "-----------------------------------------------"
+green "1. 开启/部署原生直连 Socks5 托底 (自动接管 ${cur_port} 端口，不改 v2node)"
+green "2. 切换直连协议栈策略 (prefer_v6 / prefer_v4 / v6_only / v4_only)"
+green "3. 修改监听端口"
+green "4. 切换 Debug 日志并查看最近运行日志"
+green "5. 停用直连托底并恢复官方 Socks5-WARP (warp-svc)"
+green "0. 返回上一层"
+readp "请选择：" dopt
+case "$dopt" in
+1 )
+readp "监听端口 (回车默认 ${cur_port}):" in_port
+cur_port="${in_port:-$cur_port}"
+green "请选择出站协议栈策略："
+green "1. prefer_v6 (IPv6 优先，失败回退 IPv4，推荐)"
+green "2. prefer_v4 (IPv4 优先，失败回退 IPv6)"
+green "3. v6_only   (仅 IPv6)"
+green "4. v4_only   (仅 IPv4)"
+readp "请选择 [1-4] (回车默认 1):" in_st
+case "$in_st" in
+2 ) cur_stack="prefer_v4";;
+3 ) cur_stack="v6_only";;
+4 ) cur_stack="v4_only";;
+* ) cur_stack="prefer_v6";;
+esac
+systemctl disable --now wireproxy >/dev/null 2>&1 || true
+systemctl stop warp-svc >/dev/null 2>&1 || true
+cat <<EOF > "$dconf"
+LISTEN_HOST="127.0.0.1"
+LISTEN_PORT="${cur_port}"
+STACK_MODE="${cur_stack}"
+CONNECT_TIMEOUT="6.0"
+DEBUG="${cur_dbg}"
+EOF
+if direct_socks5_write_service update; then
+systemctl enable --now warp-direct-socks5 >/dev/null 2>&1
+sleep 2
+if systemctl is-active --quiet warp-direct-socks5; then
+green "原生直连 Socks5 托底已启动 (127.0.0.1:${cur_port}, 策略: ${cur_stack})"
+curl -s --max-time 6 --socks5-hostname "127.0.0.1:${cur_port}" https://www.cloudflare.com/cdn-cgi/trace | grep -E "^(ip|colo|loc|warp)="
+else
+red "warp-direct-socks5 启动失败，请检查 journalctl -u warp-direct-socks5 -n 20"
+fi
+fi
+;;
+2 )
+green "1. prefer_v6  2. prefer_v4  3. v6_only  4. v4_only"
+readp "请选择 [1-4]:" s_choice
+case "$s_choice" in
+1 ) cur_stack="prefer_v6";;
+2 ) cur_stack="prefer_v4";;
+3 ) cur_stack="v6_only";;
+4 ) cur_stack="v4_only";;
+* ) red "无效选择" && return;;
+esac
+mkdir -p /etc
+cat <<EOF > "$dconf"
+LISTEN_HOST="127.0.0.1"
+LISTEN_PORT="${cur_port}"
+STACK_MODE="${cur_stack}"
+CONNECT_TIMEOUT="6.0"
+DEBUG="${cur_dbg}"
+EOF
+systemctl restart warp-direct-socks5 >/dev/null 2>&1
+green "已切换直连协议栈策略为 ${cur_stack} 并重启服务"
+;;
+3 )
+readp "请输入新端口 [2000-65535]:" new_p
+[[ -z "$new_p" ]] && red "未输入端口" && return
+cat <<EOF > "$dconf"
+LISTEN_HOST="127.0.0.1"
+LISTEN_PORT="${new_p}"
+STACK_MODE="${cur_stack}"
+CONNECT_TIMEOUT="6.0"
+DEBUG="${cur_dbg}"
+EOF
+systemctl restart warp-direct-socks5 >/dev/null 2>&1
+green "监听端口已改为 127.0.0.1:${new_p}"
+;;
+4 )
+[[ "$cur_dbg" == "true" ]] && cur_dbg="false" || cur_dbg="true"
+cat <<EOF > "$dconf"
+LISTEN_HOST="127.0.0.1"
+LISTEN_PORT="${cur_port}"
+STACK_MODE="${cur_stack}"
+CONNECT_TIMEOUT="6.0"
+DEBUG="${cur_dbg}"
+EOF
+systemctl restart warp-direct-socks5 >/dev/null 2>&1
+green "Debug 日志已设为 ${cur_dbg}，最近日志如下："
+journalctl -u warp-direct-socks5 -n 20 --no-pager 2>/dev/null || true
+;;
+5 )
+systemctl disable --now warp-direct-socks5 >/dev/null 2>&1 || true
+if command -v warp-cli >/dev/null 2>&1; then
+systemctl enable --now warp-svc >/dev/null 2>&1 || true
+sleep 2
+warp-cli --accept-tos mode proxy >/dev/null 2>&1 || true
+warp-cli --accept-tos proxy port "${cur_port}" >/dev/null 2>&1 || true
+warp-cli --accept-tos connect >/dev/null 2>&1 || true
+green "已停用直连托底并恢复官方 warp-svc (${cur_port})"
+else
+yellow "已停用直连托底；当前未安装 warp-cli"
+fi
 ;;
 * )
 cf
@@ -430,6 +600,7 @@ green "7. 一键生成2000多万GB流量的warp+密钥"
 echo "-----------------------------------------------"
 green "8. Google/Gemini/YouTube 深度巡检与自愈 (适配1Panel/Cron)"
 green "9. 切换系统 IPv4 / IPv6 优先级 (/etc/gai.conf)"
+green "10. 原生直连 Socks5 托底管理 (40000 端口直出本机原生 IP)"
 echo "-----------------------------------------------"
 green "0. 退出"
 readp "请选择：" warptools
@@ -478,6 +649,8 @@ elif [[ $warptools == 8 ]]; then
 gemini_monitor_tool
 elif [[ $warptools == 9 ]]; then
 toggle_ip_priority
+elif [[ $warptools == 10 ]]; then
+direct_socks5_menu
 else
 cf
 fi
@@ -596,7 +769,14 @@ check_gemini_unlock -6
 }
 
 ShowSOCKS5(){
-local s5_listener s5_owner="none" s5_port=""
+local s5_listener s5_owner="none" s5_port="" d_stack="prefer_v6"
+if systemctl is-active --quiet warp-direct-socks5 2>/dev/null || pgrep -f "warp-direct-socks5\.py" >/dev/null 2>&1; then
+s5_owner="direct-socks5"
+if [[ -f /etc/warp-direct-socks5.conf ]]; then
+s5_port=$(grep -E '^LISTEN_PORT=' /etc/warp-direct-socks5.conf | cut -d= -f2 | tr -d '"'\'' \r\n')
+d_stack=$(grep -E '^STACK_MODE=' /etc/warp-direct-socks5.conf | cut -d= -f2 | tr -d '"'\'' \r\n')
+fi
+else
 s5_listener=$(ss -ntlp 2>/dev/null | grep -E "wireproxy|warp-svc" | head -n 1)
 if echo "$s5_listener" | grep -q "wireproxy"; then
 s5_owner="wireproxy"
@@ -605,9 +785,10 @@ elif [[ $(systemctl is-active warp-svc 2>/dev/null) = active ]]; then
 s5_owner="warp-svc"
 s5_port=$(warp-cli --accept-tos settings 2>/dev/null | grep 'WarpProxy on port' | awk -F "port " '{print $2}')
 fi
+fi
 mport="${s5_port:-40000}"
 if [[ "$s5_owner" != "none" ]]; then
-local s5ip4 s5ip6 cf_v4 cf_v6 g_v4 g_v6
+local s5ip4 s5ip6 cf_v4 cf_v6
 cf_v4=$(getent ahostsv4 www.cloudflare.com 2>/dev/null | awk 'NR==1{print $1}')
 cf_v6=$(getent ahostsv6 www.cloudflare.com 2>/dev/null | awk 'NR==1{print $1}')
 [[ -n "$cf_v4" ]] && s5ip4=$(curl -s --max-time 4 --socks5 127.0.0.1:$mport --resolve "www.cloudflare.com:443:${cf_v4}" https://www.cloudflare.com/cdn-cgi/trace | grep -E '^ip=' | cut -d= -f2 | tr -d '\r\n')
@@ -618,7 +799,9 @@ nfs5
 gpt1=$(curl -sx socks5h://localhost:$mport https://chat.openai.com 2>&1)
 gpt2=$(curl -sx socks5h://localhost:$mport https://android.chat.openai.com 2>&1)
 checkgpt
-if [[ -n "$s5ip6" ]]; then
+if [[ "$s5_owner" == "direct-socks5" ]]; then
+check_gemini_unlock -x "socks5h://localhost:$mport"
+elif [[ -n "$s5ip6" ]]; then
 local g_v6 gl_v6 yt_v6
 g_v6=$(getent ahostsv6 gemini.google.com 2>/dev/null | awk 'NR==1{print $1}')
 gl_v6=$(getent ahostsv6 generativelanguage.googleapis.com 2>/dev/null | awk 'NR==1{print $1}')
@@ -638,6 +821,9 @@ local ip_disp="${s5ip}  ${country}"
 [[ -n "$s5ip4" && -n "$s5ip6" ]] && ip_disp="v6:${s5ip6} | v4:${s5ip4} (${country})"
 local owner_note=""
 [[ "$s5_owner" == "wireproxy" ]] && owner_note=" [实际托管: wireproxy]"
+if [[ "$s5_owner" == "direct-socks5" ]]; then
+S5Status=$(white "Socks5 托底状态：\c" ; green "运行中 [原生直连模式: ${d_stack:-prefer_v6}]，跳过WARP污染池" ; white " Socks5 端口：\c" ; green "$mport" ; white " 原生直连出口IP：\c" ; green "$ip_disp" ; white " 奈飞NF解锁情况：\c" ; green "$NF" ; white " ChatGPT解锁情况：\c" ; green "$chat" ; white " Gemini解锁情况：\c" ; green "$gemini")
+else
 case ${socks5} in
 plus)
 S5Status=$(white "Socks5 WARP+状态：\c" ; rred "运行中${owner_note}，WARP+账户(剩余WARP+流量：$((`warp-cli --accept-tos account 2>/dev/null | grep Quota | awk '{ print $(NF) }'`/1000000000)) GB)" ; white " Socks5 端口：\c" ; rred "$mport" ; white " 服务商 Cloudflare 出口IP：\c" ; rred "$ip_disp" ; white " 奈飞NF解锁情况：\c" ; rred "$NF" ; white " ChatGPT解锁情况：\c" ; rred "$chat" ; white " Gemini解锁情况：\c" ; rred "$gemini");;
@@ -646,6 +832,7 @@ S5Status=$(white "Socks5 WARP状态：\c" ; green "运行中${owner_note}，WARP
 *)
 S5Status=$(white "Socks5 WARP状态：\c" ; yellow "已安装Socks5-WARP客户端，但端口处于关闭状态")
 esac
+fi
 else
 S5Status=$(white "Socks5 WARP状态：\c" ; red "未安装Socks5-WARP客户端")
 fi
