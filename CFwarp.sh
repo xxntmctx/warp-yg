@@ -277,7 +277,84 @@ EOF
 }
 
 first4(){
+mkdir -p /root/warpip
+if [[ "$(cat /root/warpip/ip_prefer 2>/dev/null)" == "v6" ]]; then
+sed -i '/^precedence ::ffff:0:0\/96  100/d' /etc/gai.conf 2>/dev/null
+else
 [[ -e /etc/gai.conf ]] && grep -qE '^ *precedence ::ffff:0:0/96  100' /etc/gai.conf || echo 'precedence ::ffff:0:0/96  100' >> /etc/gai.conf 2>/dev/null
+fi
+}
+
+toggle_ip_priority(){
+mkdir -p /root/warpip
+if grep -qE '^ *precedence ::ffff:0:0/96  100' /etc/gai.conf 2>/dev/null; then
+yellow "当前系统策略：IPv4 优先 (gai.conf 已启用 ::ffff:0:0/96 100)"
+else
+green "当前系统策略：IPv6 优先 (系统默认 RFC 6724)"
+fi
+echo
+green "1. 切换为 IPv6 优先（推荐，有利于减少 Google/Gemini/YouTube 风控）"
+green "2. 切换为 IPv4 优先"
+green "0. 返回上一层"
+readp "请选择：" ipprio
+case "$ipprio" in
+1 )
+sed -i '/^precedence ::ffff:0:0\/96  100/d' /etc/gai.conf 2>/dev/null
+echo "v6" > /root/warpip/ip_prefer
+green "已切换为系统 IPv6 优先！提示：若使用 Xray/sing-box 转发至 40000 端口，请同步开启 UseIPv6 / prefer_ipv6"
+;;
+2 )
+[[ -e /etc/gai.conf ]] && grep -qE '^ *precedence ::ffff:0:0/96  100' /etc/gai.conf || echo 'precedence ::ffff:0:0/96  100' >> /etc/gai.conf 2>/dev/null
+echo "v4" > /root/warpip/ip_prefer
+green "已切换为系统 IPv4 优先"
+;;
+* )
+cf
+;;
+esac
+}
+
+gemini_monitor_tool(){
+local gscript="/usr/local/bin/warp-gemini-check.sh"
+local gurl="https://raw.githubusercontent.com/xxntmctx/warp-yg/main/gemini.sh"
+green "1. 安装/更新并立即执行一次 Google/Gemini/YouTube 深度巡检 (IPv6 优先)"
+green "2. 配置每 10 分钟 Cron 自动巡检自愈"
+green "3. 卸载 Cron 自动巡检"
+green "4. 查看最近巡检日志 (/var/log/warp-gemini.log)"
+green "0. 返回上一层"
+readp "请选择：" gopt
+case "$gopt" in
+1 )
+curl -sSL -o "$gscript" "$gurl" && chmod +x "$gscript"
+if [[ -s "$gscript" ]]; then
+green "脚本已更新至 $gscript，开始执行深度探测……"
+bash "$gscript" --ipv6
+echo
+yellow "1Panel 定时任务可直接填写以下命令："
+white "bash $gscript --ipv6"
+else
+red "下载 gemini.sh 失败，请检查网络"
+fi
+;;
+2 )
+[[ ! -s "$gscript" ]] && curl -sSL -o "$gscript" "$gurl" && chmod +x "$gscript"
+crontab -l 2>/dev/null | grep -v "warp-gemini-check.sh" > /tmp/crontab.gemini.tmp
+echo "*/10 * * * * bash $gscript --ipv6 >> /var/log/warp-gemini.log 2>&1" >> /tmp/crontab.gemini.tmp
+crontab /tmp/crontab.gemini.tmp && rm -f /tmp/crontab.gemini.tmp
+green "已启用每 10 分钟自动巡检与自愈，日志路径：/var/log/warp-gemini.log"
+;;
+3 )
+crontab -l 2>/dev/null | grep -v "warp-gemini-check.sh" > /tmp/crontab.gemini.tmp
+crontab /tmp/crontab.gemini.tmp && rm -f /tmp/crontab.gemini.tmp
+green "已移除 Cron 自动巡检任务"
+;;
+4 )
+[[ -f /var/log/warp-gemini.log ]] && tail -n 30 /var/log/warp-gemini.log || yellow "暂无巡检日志"
+;;
+* )
+cf
+;;
+esac
 }
 
 docker(){
@@ -351,6 +428,9 @@ echo "-----------------------------------------------"
 green "6. 用自备的warp密钥，慢慢刷warp+流量"
 green "7. 一键生成2000多万GB流量的warp+密钥"
 echo "-----------------------------------------------"
+green "8. Google/Gemini/YouTube 深度巡检与自愈 (适配1Panel/Cron)"
+green "9. 切换系统 IPv4 / IPv6 优先级 (/etc/gai.conf)"
+echo "-----------------------------------------------"
 green "0. 退出"
 readp "请选择：" warptools
 if [[ $warptools == 1 ]]; then
@@ -394,6 +474,10 @@ green "当前脚本累计已生成的warp+密钥已放置在/root/WARP+Keys.txt�
 green "每重新执行一次的新密钥将放置在文件末尾（包括方案一与方案二）"
 blue "$(cat /root/WARP+Keys.txt)"
 echo
+elif [[ $warptools == 8 ]]; then
+gemini_monitor_tool
+elif [[ $warptools == 9 ]]; then
+toggle_ip_priority
 else
 cf
 fi
@@ -421,28 +505,132 @@ fi
 #fi
 }
 
+get_ip_geo_info(){
+local target_ip="$1"
+local proxy_port="$2"
+local proxy_opt=""
+[[ -n "$proxy_port" ]] && proxy_opt="-x socks5h://localhost:$proxy_port"
+local json1 json2
+json1=$(curl -sm3 $proxy_opt --user-agent "${UA_Browser}" "http://ip-api.com/json/${target_ip}?lang=zh-CN" -k 2>/dev/null)
+if command -v python3 >/dev/null 2>&1; then
+geo_country=$(python3 -c 'import sys,json
+try:
+ d=json.load(sys.stdin); print(d.get("country","") if d.get("status")=="success" else "")
+except Exception: pass' <<< "$json1")
+geo_isp=$(python3 -c 'import sys,json
+try:
+ d=json.load(sys.stdin); print(d.get("isp","") or d.get("org","") if d.get("status")=="success" else "")
+except Exception: pass' <<< "$json1")
+if [[ -z "$geo_isp" || -z "$geo_country" ]]; then
+json2=$(curl -sm3 $proxy_opt --user-agent "${UA_Browser}" "https://api.ip.sb/geoip/${target_ip}" -k 2>/dev/null)
+[[ -z "$geo_isp" ]] && geo_isp=$(python3 -c 'import sys,json
+try:
+ d=json.load(sys.stdin); print(d.get("isp","") or d.get("organization","") or d.get("asn_organization",""))
+except Exception: pass' <<< "$json2")
+[[ -z "$geo_country" ]] && geo_country=$(python3 -c 'import sys,json
+try:
+ d=json.load(sys.stdin); print(d.get("country",""))
+except Exception: pass' <<< "$json2")
+fi
+else
+geo_country=$(echo "$json1" | sed -n 's/.*"country":"\([^"]*\)".*/\1/p' | head -n 1)
+geo_isp=$(echo "$json1" | sed -n 's/.*"isp":"\([^"]*\)".*/\1/p' | head -n 1)
+fi
+[[ -z "$geo_isp" ]] && geo_isp="未知"
+[[ -z "$geo_country" ]] && geo_country="未知"
+}
+
+check_gemini_unlock(){
+local -a c_args=("$@")
+local web_res web_url web_code api_res api_code yt_url
+web_res=$(curl -sL "${c_args[@]}" --connect-timeout 6 --max-time 8 -A "${UA_Browser}" -w "\n__URL__:%{url_effective}\n__CODE__:%{http_code}" "https://gemini.google.com/app" 2>/dev/null)
+web_url=$(echo "$web_res" | grep "__URL__:" | tail -n 1 | cut -d':' -f2- | tr -d '\r\n')
+web_code=$(echo "$web_res" | grep "__CODE__:" | tail -n 1 | cut -d':' -f2 | tr -d ' \r\n')
+if [[ -z "$web_code" || "$web_code" == "000" ]]; then
+gemini='杯具，当前IP无法连接Gemini服务'
+return
+fi
+if [[ "$web_code" -ge 400 ]] 2>/dev/null || echo "$web_url" | grep -qiE "gemini\.google\.com/faq|unsupported|google\.com/sorry|consent\.google\.com.*hl=ru" || echo "$web_res" | grep -qiE "(不支持.*所在的地区|not supported in your country|not available in your country|country_unavailable|unsupported_country|isn't currently supported|unusual traffic)"; then
+gemini="杯具，当前IP受限于Gemini地区或风控 (HTTP ${web_code})"
+return
+fi
+api_res=$(curl -s "${c_args[@]}" --connect-timeout 6 --max-time 8 -w "\n__CODE__:%{http_code}" "https://generativelanguage.googleapis.com/v1beta/models" 2>/dev/null)
+api_code=$(echo "$api_res" | grep "__CODE__:" | tail -n 1 | cut -d':' -f2 | tr -d ' \r\n')
+if [[ -z "$api_code" || "$api_code" == "000" || "$api_code" == "429" ]] || [[ "$api_code" -ge 500 ]] 2>/dev/null; then
+gemini="遗憾，Gemini API异常或限流 (HTTP ${api_code:-000})"
+return
+fi
+if echo "$api_res" | grep -qiE "User location is not supported|unsupported_country|FAILED_PRECONDITION"; then
+gemini='杯具，当前IP命中Gemini API地区封锁'
+return
+fi
+yt_url=$(curl -sI "${c_args[@]}" --connect-timeout 5 --max-time 6 -A "${UA_Browser}" "https://www.youtube.com/premium" 2>/dev/null | grep -i '^location:' | head -n 1 | tr -d '\r\n')
+if echo "$yt_url" | grep -qiE "consent\.youtube\.com.*([?&]hl=ru|[?&]gl=(CN|HK|MO|RU|IR|KP|BY))"; then
+gemini='遗憾，当前IP已被Google/YouTube标记俄语(hl=ru)或受限区'
+return
+fi
+gemini='恭喜，当前IP完整解锁Gemini (网页+API)'
+}
+
+gemini4(){
+check_gemini_unlock -4
+}
+
+gemini6(){
+check_gemini_unlock -6
+}
+
 ShowSOCKS5(){
-if [[ $(systemctl is-active warp-svc) = active ]]; then
-mport=`warp-cli --accept-tos settings 2>/dev/null | grep 'WarpProxy on port' | awk -F "port " '{print $2}'`
-s5ip=`curl -sx socks5h://localhost:$mport icanhazip.com -k`
+local s5_listener s5_owner="none" s5_port=""
+s5_listener=$(ss -ntlp 2>/dev/null | grep -E "wireproxy|warp-svc" | head -n 1)
+if echo "$s5_listener" | grep -q "wireproxy"; then
+s5_owner="wireproxy"
+s5_port=$(echo "$s5_listener" | awk '{print $4}' | awk -F: '{print $NF}')
+elif [[ $(systemctl is-active warp-svc 2>/dev/null) = active ]]; then
+s5_owner="warp-svc"
+s5_port=$(warp-cli --accept-tos settings 2>/dev/null | grep 'WarpProxy on port' | awk -F "port " '{print $2}')
+fi
+mport="${s5_port:-40000}"
+if [[ "$s5_owner" != "none" ]]; then
+local s5ip4 s5ip6 cf_v4 cf_v6 g_v4 g_v6
+cf_v4=$(getent ahostsv4 www.cloudflare.com 2>/dev/null | awk 'NR==1{print $1}')
+cf_v6=$(getent ahostsv6 www.cloudflare.com 2>/dev/null | awk 'NR==1{print $1}')
+[[ -n "$cf_v4" ]] && s5ip4=$(curl -s --max-time 4 --socks5 127.0.0.1:$mport --resolve "www.cloudflare.com:443:${cf_v4}" https://www.cloudflare.com/cdn-cgi/trace | grep -E '^ip=' | cut -d= -f2 | tr -d '\r\n')
+[[ -n "$cf_v6" ]] && s5ip6=$(curl -s --max-time 4 --socks5 127.0.0.1:$mport --resolve "www.cloudflare.com:443:[${cf_v6}]" https://www.cloudflare.com/cdn-cgi/trace | grep -E '^ip=' | cut -d= -f2 | tr -d '\r\n')
+s5ip="${s5ip6:-$s5ip4}"
+[[ -z "$s5ip" ]] && s5ip=$(curl -sx socks5h://localhost:$mport icanhazip.com -k 2>/dev/null)
 nfs5
 gpt1=$(curl -sx socks5h://localhost:$mport https://chat.openai.com 2>&1)
 gpt2=$(curl -sx socks5h://localhost:$mport https://android.chat.openai.com 2>&1)
 checkgpt
-#NF=$(./nf -proxy socks5h://localhost:$mport | awk '{print $1}' | sed -n '3p')
-nonf=$(curl -sx socks5h://localhost:$mport --user-agent "${UA_Browser}" http://ip-api.com/json/$s5ip?lang=zh-CN -k | cut -f2 -d"," | cut -f4 -d '"')
-#sunf=$(./nf | awk '{print $1}' | sed -n '4p')
-#snnf=$(curl -sx socks5h://localhost:$mport ip.p3terx.com -k | sed -n 2p | awk '{print $3}')
-country=$nonf
-socks5=$(curl -sx socks5h://localhost:$mport www.cloudflare.com/cdn-cgi/trace -k --connect-timeout 2 | grep warp | cut -d= -f2) 
-case ${socks5} in 
-plus) 
-S5Status=$(white "Socks5 WARP+状态：\c" ; rred "运行中，WARP+账户(剩余WARP+流量：$((`warp-cli --accept-tos account | grep Quota | awk '{ print $(NF) }'`/1000000000)) GB)" ; white " Socks5 端口：\c" ; rred "$mport" ; white " 服务商 Cloudflare 获取IPV4地址：\c" ; rred "$s5ip  $country" ; white " 奈飞NF解锁情况：\c" ; rred "$NF" ; white " ChatGPT解锁情况：\c" ; rred "$chat");;  
-on) 
-S5Status=$(white "Socks5 WARP状态：\c" ; green "运行中，WARP普通账户(无限WARP流量)" ; white " Socks5 端口：\c" ; green "$mport" ; white " 服务商 Cloudflare 获取IPV4地址：\c" ; green "$s5ip  $country" ; white " 奈飞NF解锁情况：\c" ; green "$NF" ; white " ChatGPT解锁情况：\c" ; green "$chat");;  
-*) 
+if [[ -n "$s5ip6" ]]; then
+local g_v6 gl_v6 yt_v6
+g_v6=$(getent ahostsv6 gemini.google.com 2>/dev/null | awk 'NR==1{print $1}')
+gl_v6=$(getent ahostsv6 generativelanguage.googleapis.com 2>/dev/null | awk 'NR==1{print $1}')
+yt_v6=$(getent ahostsv6 www.youtube.com 2>/dev/null | awk 'NR==1{print $1}')
+local -a s5_gem_args=(--socks5 "127.0.0.1:$mport")
+[[ -n "$g_v6" ]] && s5_gem_args+=(--resolve "gemini.google.com:443:[$g_v6]")
+[[ -n "$gl_v6" ]] && s5_gem_args+=(--resolve "generativelanguage.googleapis.com:443:[$gl_v6]")
+[[ -n "$yt_v6" ]] && s5_gem_args+=(--resolve "www.youtube.com:443:[$yt_v6]")
+check_gemini_unlock "${s5_gem_args[@]}"
+else
+check_gemini_unlock -x "socks5h://localhost:$mport"
+fi
+get_ip_geo_info "$s5ip" "$mport"
+country="$geo_country"
+socks5=$(curl -sx socks5h://localhost:$mport www.cloudflare.com/cdn-cgi/trace -k --connect-timeout 2 | grep warp | cut -d= -f2)
+local ip_disp="${s5ip}  ${country}"
+[[ -n "$s5ip4" && -n "$s5ip6" ]] && ip_disp="v6:${s5ip6} | v4:${s5ip4} (${country})"
+local owner_note=""
+[[ "$s5_owner" == "wireproxy" ]] && owner_note=" [实际托管: wireproxy]"
+case ${socks5} in
+plus)
+S5Status=$(white "Socks5 WARP+状态：\c" ; rred "运行中${owner_note}，WARP+账户(剩余WARP+流量：$((`warp-cli --accept-tos account 2>/dev/null | grep Quota | awk '{ print $(NF) }'`/1000000000)) GB)" ; white " Socks5 端口：\c" ; rred "$mport" ; white " 服务商 Cloudflare 出口IP：\c" ; rred "$ip_disp" ; white " 奈飞NF解锁情况：\c" ; rred "$NF" ; white " ChatGPT解锁情况：\c" ; rred "$chat" ; white " Gemini解锁情况：\c" ; rred "$gemini");;
+on)
+S5Status=$(white "Socks5 WARP状态：\c" ; green "运行中${owner_note}，WARP普通账户(无限WARP流量)" ; white " Socks5 端口：\c" ; green "$mport" ; white " 服务商 Cloudflare 出口IP：\c" ; green "$ip_disp" ; white " 奈飞NF解锁情况：\c" ; green "$NF" ; white " ChatGPT解锁情况：\c" ; green "$chat" ; white " Gemini解锁情况：\c" ; green "$gemini");;
+*)
 S5Status=$(white "Socks5 WARP状态：\c" ; yellow "已安装Socks5-WARP客户端，但端口处于关闭状态")
-esac 
+esac
 else
 S5Status=$(white "Socks5 WARP状态：\c" ; red "未安装Socks5-WARP客户端")
 fi
@@ -642,21 +830,18 @@ if [[ -n $v4 ]]; then
 nf4
 chatgpt4
 checkgpt
+gemini4
 wgcfv4=$(curl -s4 https://www.cloudflare.com/cdn-cgi/trace -k | grep warp | cut -d= -f2) 
-isp4a=`curl -sm3 --user-agent "${UA_Browser}" http://ip-api.com/json/$v4?lang=zh-CN -k | cut -f13 -d ":" | cut -f2 -d '"'`
-isp4b=`curl -sm3 --user-agent "${UA_Browser}" https://api.ip.sb/geoip/$v4 -k | awk -F "isp" '{print $2}' | awk -F "offset" '{print $1}' | sed "s/[,\":]//g"`
-[[ -n $isp4a ]] && isp4=$isp4a || isp4=$isp4b
-nonf=$(curl -sm3 --user-agent "${UA_Browser}" http://ip-api.com/json/$v4?lang=zh-CN -k | cut -f2 -d"," | cut -f4 -d '"')
-#sunf=$(./nf | awk '{print $1}' | sed -n '4p')
-#snnf=$(curl -s4m6 ip.p3terx.com -k | sed -n 2p | awk '{print $3}')
-country=$nonf
+get_ip_geo_info "$v4"
+isp4="$geo_isp"
+country="$geo_country"
 case ${wgcfv4} in 
 plus) 
-WARPIPv4Status=$(white "WARP+状态：\c" ; rred "运行中，$cfplus" ; white " 服务商 Cloudflare 获取IPV4地址：\c" ; rred "$v4  $country" ; white " 奈飞NF解锁情况：\c" ; rred "$NF" ; white " ChatGPT解锁情况：\c" ; rred "$chat");;  
+WARPIPv4Status=$(white "WARP+状态：\c" ; rred "运行中，$cfplus" ; white " 服务商 Cloudflare 获取IPV4地址：\c" ; rred "$v4  $country" ; white " 奈飞NF解锁情况：\c" ; rred "$NF" ; white " ChatGPT解锁情况：\c" ; rred "$chat" ; white " Gemini解锁情况：\c" ; rred "$gemini");;  
 on) 
-WARPIPv4Status=$(white "WARP状态：\c" ; green "运行中，WARP普通账户(无限WARP流量)" ; white " 服务商 Cloudflare 获取IPV4地址：\c" ; green "$v4  $country" ; white " 奈飞NF解锁情况：\c" ; green "$NF" ; white " ChatGPT解锁情况：\c" ; green "$chat");;
+WARPIPv4Status=$(white "WARP状态：\c" ; green "运行中，WARP普通账户(无限WARP流量)" ; white " 服务商 Cloudflare 获取IPV4地址：\c" ; green "$v4  $country" ; white " 奈飞NF解锁情况：\c" ; green "$NF" ; white " ChatGPT解锁情况：\c" ; green "$chat" ; white " Gemini解锁情况：\c" ; green "$gemini");;
 off) 
-WARPIPv4Status=$(white "WARP状态：\c" ; yellow "关闭中" ; white " 服务商 $isp4 获取IPV4地址：\c" ; yellow "$v4  $country" ; white " 奈飞NF解锁情况：\c" ; yellow "$NF" ; white " ChatGPT解锁情况：\c" ; yellow "$chat");; 
+WARPIPv4Status=$(white "WARP状态：\c" ; yellow "关闭中" ; white " 服务商 $isp4 获取IPV4地址：\c" ; yellow "$v4  $country" ; white " 奈飞NF解锁情况：\c" ; yellow "$NF" ; white " ChatGPT解锁情况：\c" ; yellow "$chat" ; white " Gemini解锁情况：\c" ; yellow "$gemini");; 
 esac 
 else
 WARPIPv4Status=$(white "IPV4状态：\c" ; red "不存在IPV4地址 ")
@@ -665,21 +850,18 @@ if [[ -n $v6 ]]; then
 nf6
 chatgpt6
 checkgpt
+gemini6
 wgcfv6=$(curl -s6 https://www.cloudflare.com/cdn-cgi/trace -k | grep warp | cut -d= -f2) 
-isp6a=`curl -sm3 --user-agent "${UA_Browser}" http://ip-api.com/json/$v6?lang=zh-CN -k | cut -f13 -d":" | cut -f2 -d '"'`
-isp6b=`curl -sm3 --user-agent "${UA_Browser}" https://api.ip.sb/geoip/$v6 -k | awk -F "isp" '{print $2}' | awk -F "offset" '{print $1}' | sed "s/[,\":]//g"`
-[[ -n $isp6a ]] && isp6=$isp6a || isp6=$isp6b
-nonf=$(curl -sm3 --user-agent "${UA_Browser}" http://ip-api.com/json/$v6?lang=zh-CN -k | cut -f2 -d"," | cut -f4 -d '"')
-#sunf=$(./nf | awk '{print $1}' | sed -n '8p')
-#snnf=$(curl -s6m6 ip.p3terx.com -k | sed -n 2p | awk '{print $3}')
-country=$nonf
+get_ip_geo_info "$v6"
+isp6="$geo_isp"
+country="$geo_country"
 case ${wgcfv6} in 
 plus) 
-WARPIPv6Status=$(white "WARP+状态：\c" ; rred "运行中，$cfplus" ; white " 服务商 Cloudflare 获取IPV6地址：\c" ; rred "$v6  $country" ; white " 奈飞NF解锁情况：\c" ; rred "$NF" ; white " ChatGPT解锁情况：\c" ; rred "$chat");;  
+WARPIPv6Status=$(white "WARP+状态：\c" ; rred "运行中，$cfplus" ; white " 服务商 Cloudflare 获取IPV6地址：\c" ; rred "$v6  $country" ; white " 奈飞NF解锁情况：\c" ; rred "$NF" ; white " ChatGPT解锁情况：\c" ; rred "$chat" ; white " Gemini解锁情况：\c" ; rred "$gemini");;  
 on) 
-WARPIPv6Status=$(white "WARP状态：\c" ; green "运行中，WARP普通账户(无限WARP流量)" ; white " 服务商 Cloudflare 获取IPV6地址：\c" ; green "$v6  $country" ; white " 奈飞NF解锁情况：\c" ; green "$NF" ; white " ChatGPT解锁情况：\c" ; green "$chat");;
+WARPIPv6Status=$(white "WARP状态：\c" ; green "运行中，WARP普通账户(无限WARP流量)" ; white " 服务商 Cloudflare 获取IPV6地址：\c" ; green "$v6  $country" ; white " 奈飞NF解锁情况：\c" ; green "$NF" ; white " ChatGPT解锁情况：\c" ; green "$chat" ; white " Gemini解锁情况：\c" ; green "$gemini");;
 off) 
-WARPIPv6Status=$(white "WARP状态：\c" ; yellow "关闭中" ; white " 服务商 $isp6 获取IPV6地址：\c" ; yellow "$v6  $country" ; white " 奈飞NF解锁情况：\c" ; yellow "$NF" ; white " ChatGPT解锁情况：\c" ; yellow "$chat");;
+WARPIPv6Status=$(white "WARP状态：\c" ; yellow "关闭中" ; white " 服务商 $isp6 获取IPV6地址：\c" ; yellow "$v6  $country" ; white " 奈飞NF解锁情况：\c" ; yellow "$NF" ; white " ChatGPT解锁情况：\c" ; yellow "$chat" ; white " Gemini解锁情况：\c" ; yellow "$gemini");;
 esac 
 else
 WARPIPv6Status=$(white "IPV6状态：\c" ; red "不存在IPV6地址 ")
@@ -1246,21 +1428,18 @@ if [[ -n $v4 ]]; then
 nf4
 chatgpt4
 checkgpt
+gemini4
 wgcfv4=$(curl -s4 https://www.cloudflare.com/cdn-cgi/trace -k | grep warp | cut -d= -f2) 
-isp4a=`curl -sm3 --user-agent "${UA_Browser}" http://ip-api.com/json/$v4?lang=zh-CN -k | cut -f13 -d ":" | cut -f2 -d '"'`
-isp4b=`curl -sm3 --user-agent "${UA_Browser}" https://api.ip.sb/geoip/$v4 -k | awk -F "isp" '{print $2}' | awk -F "offset" '{print $1}' | sed "s/[,\":]//g"`
-[[ -n $isp4a ]] && isp4=$isp4a || isp4=$isp4b
-nonf=$(curl -sm3 --user-agent "${UA_Browser}" http://ip-api.com/json/$v4?lang=zh-CN -k | cut -f2 -d"," | cut -f4 -d '"')
-#sunf=$(./nf | awk '{print $1}' | sed -n '4p')
-#snnf=$(curl -s4m6 ip.p3terx.com -k | sed -n 2p | awk '{print $3}')
-country=$nonf
+get_ip_geo_info "$v4"
+isp4="$geo_isp"
+country="$geo_country"
 case ${wgcfv4} in 
 plus) 
-WARPIPv4Status=$(white "WARP+状态：\c" ; rred "运行中，$cfplus" ; white " 服务商 Cloudflare 获取IPV4地址：\c" ; rred "$v4  $country" ; white " 奈飞NF解锁情况：\c" ; rred "$NF" ; white " ChatGPT解锁情况：\c" ; rred "$chat");;  
+WARPIPv4Status=$(white "WARP+状态：\c" ; rred "运行中，$cfplus" ; white " 服务商 Cloudflare 获取IPV4地址：\c" ; rred "$v4  $country" ; white " 奈飞NF解锁情况：\c" ; rred "$NF" ; white " ChatGPT解锁情况：\c" ; rred "$chat" ; white " Gemini解锁情况：\c" ; rred "$gemini");;  
 on) 
-WARPIPv4Status=$(white "WARP状态：\c" ; green "运行中，WARP普通账户(无限WARP流量)" ; white " 服务商 Cloudflare 获取IPV4地址：\c" ; green "$v4  $country" ; white " 奈飞NF解锁情况：\c" ; green "$NF" ; white " ChatGPT解锁情况：\c" ; green "$chat");;
+WARPIPv4Status=$(white "WARP状态：\c" ; green "运行中，WARP普通账户(无限WARP流量)" ; white " 服务商 Cloudflare 获取IPV4地址：\c" ; green "$v4  $country" ; white " 奈飞NF解锁情况：\c" ; green "$NF" ; white " ChatGPT解锁情况：\c" ; green "$chat" ; white " Gemini解锁情况：\c" ; green "$gemini");;
 off) 
-WARPIPv4Status=$(white "WARP状态：\c" ; yellow "关闭中" ; white " 服务商 $isp4 获取IPV4地址：\c" ; yellow "$v4  $country" ; white " 奈飞NF解锁情况：\c" ; yellow "$NF" ; white " ChatGPT解锁情况：\c" ; yellow "$chat");; 
+WARPIPv4Status=$(white "WARP状态：\c" ; yellow "关闭中" ; white " 服务商 $isp4 获取IPV4地址：\c" ; yellow "$v4  $country" ; white " 奈飞NF解锁情况：\c" ; yellow "$NF" ; white " ChatGPT解锁情况：\c" ; yellow "$chat" ; white " Gemini解锁情况：\c" ; yellow "$gemini");; 
 esac 
 else
 WARPIPv4Status=$(white "IPV4状态：\c" ; red "不存在IPV4地址 ")
@@ -1269,21 +1448,18 @@ if [[ -n $v6 ]]; then
 nf6
 chatgpt6
 checkgpt
+gemini6
 wgcfv6=$(curl -s6 https://www.cloudflare.com/cdn-cgi/trace -k | grep warp | cut -d= -f2) 
-isp6a=`curl -sm3 --user-agent "${UA_Browser}" http://ip-api.com/json/$v6?lang=zh-CN -k | cut -f13 -d":" | cut -f2 -d '"'`
-isp6b=`curl -sm3 --user-agent "${UA_Browser}" https://api.ip.sb/geoip/$v6 -k | awk -F "isp" '{print $2}' | awk -F "offset" '{print $1}' | sed "s/[,\":]//g"`
-[[ -n $isp6a ]] && isp6=$isp6a || isp6=$isp6b
-nonf=$(curl -sm3 --user-agent "${UA_Browser}" http://ip-api.com/json/$v6?lang=zh-CN -k | cut -f2 -d"," | cut -f4 -d '"')
-#sunf=$(./nf | awk '{print $1}' | sed -n '8p')
-#snnf=$(curl -s6m6 ip.p3terx.com -k | sed -n 2p | awk '{print $3}')
-country=$nonf
+get_ip_geo_info "$v6"
+isp6="$geo_isp"
+country="$geo_country"
 case ${wgcfv6} in 
 plus) 
-WARPIPv6Status=$(white "WARP+状态：\c" ; rred "运行中，$cfplus" ; white " 服务商 Cloudflare 获取IPV6地址：\c" ; rred "$v6  $country" ; white " 奈飞NF解锁情况：\c" ; rred "$NF" ; white " ChatGPT解锁情况：\c" ; rred "$chat");;  
+WARPIPv6Status=$(white "WARP+状态：\c" ; rred "运行中，$cfplus" ; white " 服务商 Cloudflare 获取IPV6地址：\c" ; rred "$v6  $country" ; white " 奈飞NF解锁情况：\c" ; rred "$NF" ; white " ChatGPT解锁情况：\c" ; rred "$chat" ; white " Gemini解锁情况：\c" ; rred "$gemini");;  
 on) 
-WARPIPv6Status=$(white "WARP状态：\c" ; green "运行中，WARP普通账户(无限WARP流量)" ; white " 服务商 Cloudflare 获取IPV6地址：\c" ; green "$v6  $country" ; white " 奈飞NF解锁情况：\c" ; green "$NF" ; white " ChatGPT解锁情况：\c" ; green "$chat");;
+WARPIPv6Status=$(white "WARP状态：\c" ; green "运行中，WARP普通账户(无限WARP流量)" ; white " 服务商 Cloudflare 获取IPV6地址：\c" ; green "$v6  $country" ; white " 奈飞NF解锁情况：\c" ; green "$NF" ; white " ChatGPT解锁情况：\c" ; green "$chat" ; white " Gemini解锁情况：\c" ; green "$gemini");;
 off) 
-WARPIPv6Status=$(white "WARP状态：\c" ; yellow "关闭中" ; white " 服务商 $isp6 获取IPV6地址：\c" ; yellow "$v6  $country" ; white " 奈飞NF解锁情况：\c" ; yellow "$NF" ; white " ChatGPT解锁情况：\c" ; yellow "$chat");;
+WARPIPv6Status=$(white "WARP状态：\c" ; yellow "关闭中" ; white " 服务商 $isp6 获取IPV6地址：\c" ; yellow "$v6  $country" ; white " 奈飞NF解锁情况：\c" ; yellow "$NF" ; white " ChatGPT解锁情况：\c" ; yellow "$chat" ; white " Gemini解锁情况：\c" ; yellow "$gemini");;
 esac 
 else
 WARPIPv6Status=$(white "IPV6状态：\c" ; red "不存在IPV6地址 ")
@@ -1829,16 +2005,18 @@ echo
 v4v6
 UA_Browser="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.87 Safari/537.36"
 if [[ -n $v6 ]]; then
-nonf=$(curl -s6 --user-agent "${UA_Browser}" http://ip-api.com/json/$v6?lang=zh-CN -k | cut -f2 -d"," | cut -f4 -d '"')
-nf6;chatgpt6;checkgpt
-v6Status=$(white "IPV6地址：\c" ; blue "$v6   $nonf" ; white " Netflix： \c" ; blue "$NF" ; white " ChatGPT： \c" ; blue "$chat")
+get_ip_geo_info "$v6"
+nonf="$geo_country"
+nf6;chatgpt6;checkgpt;gemini6
+v6Status=$(white "IPV6地址：\c" ; blue "$v6   $nonf" ; white " Netflix： \c" ; blue "$NF" ; white " ChatGPT： \c" ; blue "$chat" ; white " Gemini： \c" ; blue "$gemini")
 else
 v6Status=$(white "IPV6地址：\c" ; red "不存在IPV6地址")
 fi
 if [[ -n $v4 ]]; then
-nonf=$(curl -s4 --user-agent "${UA_Browser}" http://ip-api.com/json/$v4?lang=zh-CN -k | cut -f2 -d"," | cut -f4 -d '"')
-nf4;chatgpt4;checkgpt
-v4Status=$(white "IPV4地址：\c" ; blue "$v4   $nonf" ; white " Netflix： \c" ; blue "$NF" ; white " ChatGPT： \c" ; blue "$chat")
+get_ip_geo_info "$v4"
+nonf="$geo_country"
+nf4;chatgpt4;checkgpt;gemini4
+v4Status=$(white "IPV4地址：\c" ; blue "$v4   $nonf" ; white " Netflix： \c" ; blue "$NF" ; white " ChatGPT： \c" ; blue "$chat" ; white " Gemini： \c" ; blue "$gemini")
 else
 v4Status=$(white "IPV4地址：\c" ; red "不存在IPV4地址")
 fi
